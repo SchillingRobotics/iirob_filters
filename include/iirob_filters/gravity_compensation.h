@@ -59,8 +59,8 @@ namespace iirob_filters
 class GravityCompensatorParameters : public controller_interface::ControllerParameters
 {
 public:
-  GravityCompensatorParameters(const std::string & params_prefix) :
-   controller_interface::ControllerParameters(params_prefix, 0, 4, 3)
+  GravityCompensatorParameters(const std::string& params_prefix)
+    : controller_interface::ControllerParameters(params_prefix, 0, 4, 3)
   {
     add_string_parameter("world_frame", false);
     add_string_parameter("sensor_frame", false);
@@ -83,9 +83,8 @@ public:
     {
       if (std::isnan(double_parameters_[i].second))
       {
-        RCUTILS_LOG_ERROR_NAMED(
-          logger_name_.c_str(),
-          "Parameter '%s' has to be set", double_parameters_[i].first.name.c_str());
+        RCUTILS_LOG_ERROR_NAMED(logger_name_.c_str(), "Parameter '%s' has to be set",
+                                double_parameters_[i].first.name.c_str());
         ret = false;
       }
     }
@@ -96,30 +95,18 @@ public:
   void update_storage() override
   {
     world_frame_ = string_parameters_[0].second;
-    RCUTILS_LOG_INFO_NAMED(
-        logger_name_.c_str(),
-       "World frame: %s", world_frame_.c_str());
+    RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "World frame: %s", world_frame_.c_str());
     sensor_frame_ = string_parameters_[0].second;
-    RCUTILS_LOG_INFO_NAMED(
-        logger_name_.c_str(),
-       "Sensor frame: %s", sensor_frame_.c_str());
+    RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "Sensor frame: %s", sensor_frame_.c_str());
     force_frame_ = string_parameters_[0].second;
-    RCUTILS_LOG_INFO_NAMED(
-        logger_name_.c_str(),
-       "Force frame: %s", force_frame_.c_str());
+    RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "Force frame: %s", force_frame_.c_str());
 
     cog_.vector.x = double_parameters_[0].second;
-    RCUTILS_LOG_INFO_NAMED(
-        logger_name_.c_str(),
-       "CoG X is %e", cog_.vector.x);
+    RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "CoG X is %e", cog_.vector.x);
     cog_.vector.y = double_parameters_[1].second;
-    RCUTILS_LOG_INFO_NAMED(
-        logger_name_.c_str(),
-       "CoG Y is %e", cog_.vector.y);
+    RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "CoG Y is %e", cog_.vector.y);
     cog_.vector.z = double_parameters_[2].second;
-    RCUTILS_LOG_INFO_NAMED(
-        logger_name_.c_str(),
-       "CoG Z is %e", cog_.vector.z);
+    RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "CoG Z is %e", cog_.vector.z);
 
     force_z_ = double_parameters_[3].second;
     RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "Force is %e", force_z_);
@@ -193,21 +180,18 @@ bool GravityCompensator<T>::configure()
   logger_.reset(new rclcpp::Logger(this->logging_interface_->get_logger().get_child(this->filter_name_)));
   parameters_.reset(new GravityCompensatorParameters(this->param_prefix_));
 
-  parameters_->initialize(this->params_interface_, logger_->get_name());
+  parameters_->declare_parameters(this->logging_interface_, this->params_interface_);
 
-  parameters_->declare_parameters();
-
-  if(!parameters_->get_parameters())
+  if (!parameters_->get_parameters())
   {
     return false;
   }
 
   // Add callback to dynamically update parameters
-  on_set_callback_handle_ = this->params_interface_->add_on_set_parameters_callback(
-    [this](const std::vector<rclcpp::Parameter> & parameters) {
-
-      return parameters_->set_parameter_callback(parameters);
-    });
+  on_set_callback_handle_ =
+      this->params_interface_->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& parameters) {
+        return parameters_->set_parameter_callback(parameters);
+      });
 
   return true;
 }
@@ -225,12 +209,10 @@ bool GravityCompensator<T>::update(const T& data_in, T& data_out)
 
   try
   {
-    transform_ = p_tf_Buffer_->lookupTransform(
-      parameters_->world_frame_, data_in.header.frame_id, rclcpp::Time());
-    transform_back_ = p_tf_Buffer_->lookupTransform(
-      data_in.header.frame_id, parameters_->world_frame_, rclcpp::Time());
-    transform_cog_ = p_tf_Buffer_->lookupTransform(
-      parameters_->world_frame_,  parameters_->force_frame_, rclcpp::Time());
+    transform_ = p_tf_Buffer_->lookupTransform(parameters_->world_frame_, data_in.header.frame_id, rclcpp::Time());
+    transform_back_ = p_tf_Buffer_->lookupTransform(data_in.header.frame_id, parameters_->world_frame_, rclcpp::Time());
+    transform_cog_ =
+        p_tf_Buffer_->lookupTransform(parameters_->world_frame_, parameters_->force_frame_, rclcpp::Time());
   }
   catch (const tf2::TransformException& ex)
   {
