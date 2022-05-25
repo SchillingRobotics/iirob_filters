@@ -96,9 +96,9 @@ public:
   {
     world_frame_ = string_parameters_[0].second;
     RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "World frame: %s", world_frame_.c_str());
-    sensor_frame_ = string_parameters_[0].second;
+    sensor_frame_ = string_parameters_[1].second;
     RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "Sensor frame: %s", sensor_frame_.c_str());
-    force_frame_ = string_parameters_[0].second;
+    force_frame_ = string_parameters_[2].second;
     RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "Force frame: %s", force_frame_.c_str());
 
     cog_.vector.x = double_parameters_[0].second;
