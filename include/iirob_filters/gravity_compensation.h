@@ -60,11 +60,12 @@ class GravityCompensatorParameters : public controller_interface::ControllerPara
 {
 public:
   GravityCompensatorParameters(const std::string& params_prefix)
-    : controller_interface::ControllerParameters(params_prefix, 0, 4, 3)
+    : controller_interface::ControllerParameters(params_prefix, 1, 4, 3)
   {
     add_string_parameter("world_frame", false);
     add_string_parameter("sensor_frame", false);
     add_string_parameter("force_frame", false);
+    add_bool_parameter("world_frame_z_is_down", false);
 
     add_double_parameter("CoG.x", true);
     add_double_parameter("CoG.y", true);
@@ -101,6 +102,9 @@ public:
     force_frame_ = string_parameters_[2].second;
     RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "Force frame: %s", force_frame_.c_str());
 
+    world_frame_z_is_down_ = bool_parameters_[0].second;
+    RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "World Frame Z is down: %d", world_frame_z_is_down_);
+
     cog_.vector.x = double_parameters_[0].second;
     RCUTILS_LOG_INFO_NAMED(logger_name_.c_str(), "CoG X is %e", cog_.vector.x);
     cog_.vector.y = double_parameters_[1].second;
@@ -116,6 +120,8 @@ public:
   std::string world_frame_;
   std::string sensor_frame_;
   std::string force_frame_;
+
+  bool world_frame_z_is_down_;
 
   // Storage for Calibration Values
   geometry_msgs::msg::Vector3Stamped cog_;  // Center of Gravity Vector (wrt Sensor Frame)
@@ -153,7 +159,8 @@ private:
   // tf2 objects
   std::unique_ptr<tf2_ros::Buffer> p_tf_Buffer_;
   std::unique_ptr<tf2_ros::TransformListener> p_tf_Listener_;
-  geometry_msgs::msg::TransformStamped transform_, transform_back_, transform_cog_;
+  geometry_msgs::msg::TransformStamped transform_input_frame_in_world_, transform_world_in_input_frame_,
+      transform_force_frame_in_world_, transform_world_in_force_frame_;
 
   // Callback for updating dynamic parameters
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_callback_handle_;
@@ -209,42 +216,65 @@ bool GravityCompensator<T>::update(const T& data_in, T& data_out)
 
   try
   {
-    transform_ = p_tf_Buffer_->lookupTransform(parameters_->world_frame_, data_in.header.frame_id, rclcpp::Time());
-    transform_back_ = p_tf_Buffer_->lookupTransform(data_in.header.frame_id, parameters_->world_frame_, rclcpp::Time());
-    transform_cog_ =
+    transform_input_frame_in_world_ =
+        p_tf_Buffer_->lookupTransform(parameters_->world_frame_, data_in.header.frame_id, rclcpp::Time());
+    transform_world_in_input_frame_ =
+        p_tf_Buffer_->lookupTransform(data_in.header.frame_id, parameters_->world_frame_, rclcpp::Time());
+    transform_force_frame_in_world_ =
         p_tf_Buffer_->lookupTransform(parameters_->world_frame_, parameters_->force_frame_, rclcpp::Time());
+    transform_world_in_force_frame_ =
+        p_tf_Buffer_->lookupTransform(parameters_->force_frame_, parameters_->world_frame_, rclcpp::Time());
   }
   catch (const tf2::TransformException& ex)
   {
     RCLCPP_ERROR_SKIPFIRST_THROTTLE((*logger_), *clock_, 5000, "%s", ex.what());
   }
 
-  geometry_msgs::msg::Vector3Stamped temp_force_transformed, temp_torque_transformed, temp_vector_in, temp_vector_out;
+  geometry_msgs::msg::Wrench wrench_in, wrench_out, temp_wrench_transformed_to_world;
+  Eigen::Isometry3d transform_world_in_cog;
 
-  temp_vector_in.vector = data_in.wrench.force;
-  tf2::doTransform(temp_vector_in, temp_force_transformed, transform_);
+  // convert input wrench to world frame
+  tf2::doTransform<geometry_msgs::msg::Wrench>(data_in.wrench, temp_wrench_transformed_to_world,
+                                               transform_input_frame_in_world_);
 
-  temp_vector_in.vector = data_in.wrench.torque;
-  tf2::doTransform(temp_vector_in, temp_torque_transformed, transform_);
+  // calculate transform from world frame to cog
+  Eigen::Translation3d force_frame_in_cog(-parameters_->cog_.vector.x, -parameters_->cog_.vector.y,
+                                          -parameters_->cog_.vector.z);
+  // transform world frame in cog frame
+  transform_world_in_cog = force_frame_in_cog * tf2::transformToEigen(transform_world_in_force_frame_);
 
-  // Transform CoG Vector
-  geometry_msgs::msg::Vector3Stamped cog_transformed;
-  tf2::doTransform(parameters_->cog_, cog_transformed, transform_cog_);
+  // get gravity component of force at CoG
+  // gravity component is component of force in direction of world Z frame
+  auto rotation_world_to_cog = transform_world_in_cog.rotation();
+  // the 3rd col of rotation matrix is components of cog frame that make up world z frame
+  auto gravity_force = rotation_world_to_cog.col(2) *
+                       (parameters_->world_frame_z_is_down_ ? parameters_->force_z_ : -parameters_->force_z_);
+  wrench_in.force.x = gravity_force[0];
+  wrench_in.force.y = gravity_force[1];
+  wrench_in.force.z = gravity_force[2];
 
-  // Compensate for gravity force
-  temp_force_transformed.vector.z += parameters_->force_z_;
-  // Compensation Values for torque result from Crossprod of cog Vector and (0 0 G)
-  temp_torque_transformed.vector.x += (parameters_->force_z_ * cog_transformed.vector.y);
-  temp_torque_transformed.vector.y -= (parameters_->force_z_ * cog_transformed.vector.x);
+  geometry_msgs::msg::TransformStamped transform_cog_in_force_frame, transform_cog_in_world;
+  transform_cog_in_force_frame.transform.translation.x = parameters_->cog_.vector.x;
+  transform_cog_in_force_frame.transform.translation.y = parameters_->cog_.vector.y;
+  transform_cog_in_force_frame.transform.translation.z = parameters_->cog_.vector.z;
+
+  // Caclulate transform_cog_in_world = transform_force_frame_in_world_ * transform_cog_in_force_frame
+  tf2::doTransform(transform_cog_in_force_frame, transform_cog_in_world, transform_force_frame_in_world_);
+
+  // now convert gravity force in cog frame to world frame
+  tf2::doTransform<geometry_msgs::msg::Wrench>(wrench_in, wrench_out, transform_cog_in_world);
+
+  temp_wrench_transformed_to_world.force.x += wrench_out.force.x;
+  temp_wrench_transformed_to_world.force.y += wrench_out.force.y;
+  temp_wrench_transformed_to_world.force.z += wrench_out.force.z;
+  temp_wrench_transformed_to_world.torque.x += wrench_out.torque.x;
+  temp_wrench_transformed_to_world.torque.y += wrench_out.torque.y;
+  temp_wrench_transformed_to_world.torque.z += wrench_out.torque.z;
 
   // Copy Message and Compensate values for Gravity Force and Resulting Torque
-  data_out = data_in;
-
-  tf2::doTransform(temp_force_transformed, temp_vector_out, transform_back_);
-  data_out.wrench.force = temp_vector_out.vector;
-
-  tf2::doTransform(temp_torque_transformed, temp_vector_out, transform_back_);
-  data_out.wrench.torque = temp_vector_out.vector;
+  data_out.header = data_in.header;
+  tf2::doTransform<geometry_msgs::msg::Wrench>(temp_wrench_transformed_to_world, data_out.wrench,
+                                               transform_world_in_input_frame_);
 
   return true;
 }
